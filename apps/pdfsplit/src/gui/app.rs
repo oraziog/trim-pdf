@@ -103,6 +103,9 @@ pub struct App {
     pdf_version: Option<Version>,
     keep_bookmarks: bool,
     overwrite: bool,
+    /// Whether the window is drawn dark. Dark is what it opens as, and the toggle in the corner
+    /// is the only thing that changes it.
+    dark: bool,
 
     info: Option<Summary>,
     info_problem: Option<String>,
@@ -153,6 +156,7 @@ impl Default for App {
             pdf_version: None,
             keep_bookmarks: true,
             overwrite: false,
+            dark: true,
             info: None,
             info_problem: None,
             info_rx: None,
@@ -412,8 +416,16 @@ impl App {
     /// The window's content, drawn into `ui`.
     pub fn contents(&mut self, ui: &mut egui::Ui) {
         let running = self.running();
+        // The theme is the window's own, not the system's: it opens dark and only the toggle in the
+        // corner changes it, so a machine set to light does not get a light window by surprise.
+        ui.ctx().set_theme(if self.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.label(egui::RichText::new("Taglia un PDF").size(26.0).strong().color(ORANGE));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Taglia un PDF").size(26.0).strong().color(ORANGE));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.toggle_value(&mut self.dark, "Tema").on_hover_text("scuro quando è acceso, chiaro quando è spento");
+                });
+            });
             ui.add_space(4.0);
             self.file_section(ui, running);
             ui.separator();
@@ -773,11 +785,7 @@ impl App {
         if let Some(update) = self.update {
             ui.label(detail(update));
         }
-        let mut line = format!("trascorsi {}", human_duration(meter.elapsed(now)));
-        if let Some(eta) = meter.last_eta() {
-            line.push_str(&format!(" · circa {} rimasti", human_duration(eta)));
-        }
-        ui.label(line);
+        ui.label(progress_line(meter, now, self.running()));
     }
 
     fn result_section(&mut self, ui: &mut egui::Ui) {
@@ -854,6 +862,18 @@ fn take(receiver: &Receiver<Event>) -> (Vec<Event>, bool) {
     }
 }
 
+/// The line under the bar: how long the job has run, and — only while it runs — how long is left.
+///
+/// An estimate belongs to a job still going. Once it has ended, the elapsed time here and the total
+/// in the result are the truth, and a countdown left over on screen reads as a mistake.
+fn progress_line(meter: &Meter, now: Instant, running: bool) -> String {
+    let mut line = format!("trascorsi {}", human_duration(meter.elapsed(now)));
+    if running && let Some(eta) = meter.last_eta() {
+        line.push_str(&format!(" · circa {} rimasti", human_duration(eta)));
+    }
+    line
+}
+
 /// What one report counts, as a person reads it.
 fn detail(update: Update) -> String {
     match update.unit {
@@ -886,8 +906,9 @@ mod tests {
 
     use splitter::Stage;
 
-    /// Run a frame of the window without a screen: egui lays out, draws nothing.
-    fn frame(app: &mut App) {
+    /// Run a frame of the window without a screen: egui lays out, draws nothing. Returns the theme
+    /// the frame ended with, so a test can see what the window asked for.
+    fn frame(app: &mut App) -> egui::ThemePreference {
         let ctx = egui::Context::default();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };
         let mut output = ctx.run_ui(input, |ui| {
@@ -898,6 +919,16 @@ mod tests {
         // Nothing draws these frames: the textures a real backend would upload are dropped, and
         // epaint wants that said out loud.
         output.textures_delta.clear();
+        ctx.options(|options| options.theme_preference)
+    }
+
+    #[test]
+    fn the_window_opens_dark_and_the_toggle_changes_it() {
+        let mut app = App::default();
+        assert!(app.dark, "the window should open dark");
+        assert_eq!(frame(&mut app), egui::ThemePreference::Dark);
+        app.dark = false;
+        assert_eq!(frame(&mut app), egui::ThemePreference::Light, "the toggle did not reach the window");
     }
 
     #[test]
@@ -930,6 +961,21 @@ mod tests {
         app.handle(Event::Cancelled);
         assert!(app.cancelled);
         frame(&mut app);
+    }
+
+    #[test]
+    fn a_finished_job_leaves_no_countdown_on_screen() {
+        let start = Instant::now();
+        let mut meter = Meter::new(&[Stage::Write, Stage::Verify], start);
+        meter.feed(Update::of_part(Stage::Write, 1, 2, 50, 100, Unit::Bytes), start);
+        meter.feed(Update::of_part(Stage::Write, 2, 2, 100, 100, Unit::Bytes), start);
+        assert!(meter.last_eta().is_some(), "there was nothing to estimate from");
+        let later = start + std::time::Duration::from_secs(2);
+        assert!(progress_line(&meter, later, true).contains("rimasti"));
+        // The same meter once the job has ended: the time stays, the estimate goes.
+        let finished = progress_line(&meter, later, false);
+        assert!(!finished.contains("rimasti"), "a countdown outlived the job: {finished}");
+        assert!(finished.starts_with("trascorsi"), "the elapsed time was lost: {finished}");
     }
 
     #[test]

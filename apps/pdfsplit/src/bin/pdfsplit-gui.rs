@@ -114,10 +114,11 @@ fn default_order() -> Vec<Attempt> {
 fn open(attempt: Attempt) -> eframe::Result<()> {
     let mut options = eframe::NativeOptions {
         renderer: attempt.renderer,
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 700.0])
-            .with_min_inner_size([620.0, 520.0])
-            .with_title(concat!("pdfsplit ", env!("CARGO_PKG_VERSION"), " — taglia un PDF")),
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([900.0, 700.0]).with_min_inner_size([620.0, 520.0]).with_title(concat!(
+            "pdfsplit ",
+            env!("CARGO_PKG_VERSION"),
+            " — taglia un PDF"
+        )),
         ..Default::default()
     };
     if let Some(backends) = attempt.backends
