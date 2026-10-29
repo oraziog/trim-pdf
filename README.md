@@ -1,3 +1,5 @@
+<img src="assets/icona-gui.png" width="88" align="right" alt="pdfsplit">
+
 # pdfsplit
 
 Taglia PDF enormi — decine di migliaia di pagine, diversi gigabyte — in parti, senza mai caricare
@@ -18,7 +20,7 @@ diviso in due parti in meno di un minuto, con il picco di memoria sotto il gigab
 - **Quattro modi di tagliare**: elenco di pagine, N parti uguali, testo trovato nelle pagine,
   livello dei segnalibri.
 - **Due interfacce**: `pdfsplit`, da console, e `pdfsplit-gui`, una finestra con fasi, avanzamento,
-  stima del tempo rimasto e annulla.
+  stima del tempo rimasto e annulla. Ognuna ha la sua icona, incisa nell'eseguibile.
 
 ## Compilare
 
@@ -30,14 +32,22 @@ cargo build --profile release-min --features gui       # finestra
 ```
 
 Il profilo `release-min` è quello della distribuzione: `opt-level = "s"`, LTO, `strip`, `panic
-abort`. Produce `target/release-min/pdfsplit.exe` (circa 555 KiB) e, con la feature `gui`,
-`pdfsplit-gui.exe` (circa 8 MiB, quasi tutto egui e wgpu).
+abort`. Produce `target/release-min/pdfsplit.exe` (circa 646 KiB) e, con la feature `gui`,
+`pdfsplit-gui.exe` (circa 7,8 MiB, quasi tutto egui e wgpu).
 
 I test:
 
 ```sh
 cargo test --workspace
 cargo test -p pdfsplit --features gui
+```
+
+Le icone stanno in `assets/` e `apps/pdfsplit/build.rs` le incide nei due eseguibili, insieme alle
+proprietà del file (descrizione, prodotto, versione). Per rifarle dai due disegni di partenza serve
+Python con Pillow:
+
+```sh
+python tools/make-icons.py disegno-console.png disegno-finestra.png
 ```
 
 ## Uso
@@ -98,4 +108,115 @@ difetto, con la stessa versione PDF del sorgente.
 
 MIT oppure Apache-2.0, a scelta. Vedi [LICENSE-MIT](LICENSE-MIT) e [LICENSE-APACHE](LICENSE-APACHE),
 e [NOTICE](NOTICE) per il codice di terzi incluso (`vendor/pdfcraft-filters`, derivato da
+[PdfCraft](https://github.com/storytold/pdfcraft)).
+
+---
+
+# English
+
+Splits very large PDFs — tens of thousands of pages, several gigabytes — into parts, without ever
+loading the document into memory.
+
+It covers the cases where ordinary tools give up: a single 6 GB PDF with 73,868 pages, split into
+two parts in under a minute, with peak memory below one gigabyte.
+
+## What it does
+
+- **Reads the structure incrementally.** `xref` tables and streams, object streams, files with
+  several sections: each object is read when it is needed, never all at once.
+- **Copies streams byte for byte.** No re-encoding of images or fonts: parts are written by copying
+  bytes, so time depends on the disk and not on the content.
+- **Rebuilds bookmarks in every part**, recomputing destinations against the pages that part really
+  holds. A link pointing at a page that ended up elsewhere becomes null instead of dragging the
+  rest of the document inside.
+- **Four ways to cut**: page list, N equal parts, text found on pages, bookmark level.
+- **Two interfaces**: `pdfsplit` on the console and `pdfsplit-gui`, a window with phases, progress,
+  remaining-time estimate and cancel. Each has its own icon, embedded in the executable.
+
+## Building
+
+Rust 1.95 or later.
+
+```sh
+cargo build --profile release-min                      # console
+cargo build --profile release-min --features gui       # window
+```
+
+The `release-min` profile is the distribution one: `opt-level = "s"`, LTO, `strip`, `panic abort`.
+It produces `target/release-min/pdfsplit.exe` (about 646 KiB) and, with the `gui` feature,
+`pdfsplit-gui.exe` (about 7.8 MiB, almost all of it egui and wgpu).
+
+Tests:
+
+```sh
+cargo test --workspace
+cargo test -p pdfsplit --features gui
+```
+
+Icons live in `assets/` and `apps/pdfsplit/build.rs` embeds them into both executables, together
+with the file properties (description, product, version). Regenerating them from the two source
+drawings needs Python with Pillow:
+
+```sh
+python tools/make-icons.py console-drawing.png window-drawing.png
+```
+
+## Usage
+
+```
+pdfsplit info <file.pdf>             what the file is: size, version, pages, bookmarks, encryption
+pdfsplit pages <file.pdf>            the page count only
+pdfsplit bookmarks <file.pdf>        the outline as `level<TAB>page<TAB>title` lines
+pdfsplit search <file.pdf> <text>    which pages contain the text
+pdfsplit text <file.pdf> --page N    what a page says
+pdfsplit split <file.pdf>            cut the file into parts
+pdfsplit --help                      this text
+```
+
+Examples:
+
+```sh
+# one document per heading found in the text, named after that line
+pdfsplit split "FILE_TEST_X_TRIM-PDF.pdf" --string "AVVISO DI PAGAMENTO TASSA RIFIUTI" --name-label "Documento N."
+
+# the first 35,308 pages, the rest in one last file, replacing anything already there
+pdfsplit split "FILE_TEST_X_TRIM-PDF.pdf" --pages 1-35308 --leftover --overwrite
+
+# cut at first-level bookmarks, compressing the streams
+pdfsplit split "Fattura 101.pdf" --bookmarks 1 --name-from-title --compress --out .\out-dir
+```
+
+Parts are named, for example, `FILE_TEST_X_TRIM-PDF-01.pdf`, `-02.pdf`. `--prefix`, `--suffix`,
+`--width` and `--start` change the prefix, the suffix, the number of digits and the first number;
+`--always-number` adds the sequence even when the name comes from the text.
+
+## Measured performance
+
+On a real 6.06 GB PDF with 73,868 pages, split into two parts of about 37,000 pages:
+
+| | |
+|---|---|
+| duration | 00:00:49 |
+| bytes written | 6,104 MiB |
+
+Peak memory does not grow with the page count: on a synthetic 300,000-page fixture it stays below
+700 MiB, because the document is never read all at once.
+
+Compressing the streams costs about a minute and a half more on the same file, because every stream
+has to be decompressed and recompressed instead of copied. That is why parts are written, by
+default, in the same PDF version as the source.
+
+## Known limits
+
+- References to pages that end up in another part are nulled: an internal link does not survive the
+  cut.
+- From the catalogue, pages, bookmarks and `OCProperties` are carried over; `Info`, `Metadata`,
+  `PageLabels`, `Names` and `StructTreeRoot` are not rewritten.
+- A part cannot be written in a PDF version older than 1.5 when it uses object streams and xref
+  streams: in that case the source version is raised and the report says so.
+
+## Licence
+
+MIT or Apache-2.0, at your choice. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE),
+and [NOTICE](NOTICE) for the bundled third-party code (`vendor/pdfcraft-filters`, derived from
 [PdfCraft](https://github.com/storytold/pdfcraft)).
