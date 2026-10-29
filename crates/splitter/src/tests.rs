@@ -805,6 +805,12 @@ fn a_split_says_which_phase_it_is_in() {
     for stage in [Stage::Structure, Stage::Plan, Stage::Write, Stage::Verify] {
         assert!(stages.contains(&stage), "{stage:?} was never reported: {stages:?}");
     }
+    // Planning counts the names settled, not the parts there are: it opens at nothing and only
+    // closes at the last name, so a console never starts on `piano 100%`.
+    let planning: Vec<Update> = updates.iter().filter(|update| update.stage == Stage::Plan).copied().collect();
+    assert!(planning.first().is_some_and(|update| update.fraction() < 1.0), "the plan opened as finished: {planning:?}");
+    assert!(planning.windows(2).all(|pair| pair[0].fraction() <= pair[1].fraction()), "the plan went backwards: {planning:?}");
+    assert!(planning.last().is_some_and(|update| update.fraction() == 1.0), "the plan never finished: {planning:?}");
     // The last word is that every part was written and checked.
     let last = *updates.last().unwrap();
     assert_eq!(last.stage, Stage::Verify);

@@ -429,6 +429,8 @@ impl App {
             self.command_section(ui, running);
             self.progress_section(ui);
             self.result_section(ui);
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(format!("pdfsplit {}", env!("CARGO_PKG_VERSION"))).small().weak());
         });
     }
 

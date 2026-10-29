@@ -114,6 +114,15 @@ impl Setup {
 
     /// Open the file, work out the parts, write them: the whole job, reporting each phase to `job`.
     pub fn run(&self, job: &Job) -> Result<SplitReport, Error> {
+        self.prepare(job)?.write(&self.options(), job)
+    }
+
+    /// Open the file and work out the parts, without writing a byte.
+    ///
+    /// The command line prints what it knows here, before the writing starts, so a person watching
+    /// the console sees the job was taken instead of a blinking cursor. What it prints then is the
+    /// same report, in the same order, as if it had all been printed at the end.
+    pub fn prepare(&self, job: &Job) -> Result<Prepared, Error> {
         if let Some(message) = self.problem() {
             return Err(Error::Invalid(message));
         }
@@ -141,7 +150,59 @@ impl Setup {
                 SplitPlan::from_bookmarks(&bookmarks, *level, pages)?
             }
         };
-        let mut report = document.split_with(&plan, &self.options(), job)?;
+        let source = Version::of_source(document.pdf_version()).unwrap_or(Version::PDF_1_7);
+        Ok(Prepared { source_size: document.file_size(), pages, version: self.options().wanted_version(source), document, plan, found })
+    }
+}
+
+/// A job worked out and not yet written: the parts it will make, and the file they come from.
+///
+/// Holding this means the expensive reading — the walk of the page tree, and the search when the
+/// cut is by text — is already done, so a front end can say what it found before the writing begins.
+/// Writing it consumes it: the parts are read from the same open document.
+pub struct Prepared {
+    document: Document,
+    plan: SplitPlan,
+    pages: usize,
+    source_size: u64,
+    /// The version the parts are written in, before a page that needs more raises it on its own.
+    version: Version,
+    found: Option<Search>,
+}
+
+impl Prepared {
+    /// How many pages the walk found: what the plan was built on.
+    #[must_use]
+    pub fn pages(&self) -> usize {
+        self.pages
+    }
+
+    #[must_use]
+    pub fn source_size(&self) -> u64 {
+        self.source_size
+    }
+
+    #[must_use]
+    pub fn version(&self) -> Version {
+        self.version
+    }
+
+    /// How many parts there will be.
+    #[must_use]
+    pub fn part_count(&self) -> usize {
+        self.plan.len()
+    }
+
+    /// What a cut by text found, when the mode looked for text.
+    #[must_use]
+    pub fn found(&self) -> Option<&Search> {
+        self.found.as_ref()
+    }
+
+    /// Write the parts, reporting each phase to `job`.
+    pub fn write(self, options: &SplitOptions, job: &Job) -> Result<SplitReport, Error> {
+        let Prepared { mut document, plan, found, .. } = self;
+        let mut report = document.split_with(&plan, options, job)?;
         if let Some(search) = found {
             // A page with no text is the one thing a cut by text can get wrong without saying so:
             // on a scan nothing matches, and every page goes to the same part.

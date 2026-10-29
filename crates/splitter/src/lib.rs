@@ -49,7 +49,7 @@ pub use object::ObjRef;
 pub use plan::SplitPlan;
 pub use progress::{Canceller, Job, Stage, Unit, Update};
 pub use search::{Query, Search};
-pub use setup::{Mode, Naming, Setup};
+pub use setup::{Mode, Naming, Prepared, Setup};
 pub use structure::Bookmark;
 pub use text::PageText;
 
@@ -598,8 +598,11 @@ impl Document {
                 }
             };
             paths.push(directory.join(format!("{name}.pdf")));
-            job.part(Stage::Plan, number, plan.len(), number as u64, plan.len() as u64, Unit::Parts);
+            // How many names are settled, not how many parts there are: the row must start at zero
+            // and climb, or the first thing a person reads is a job that looks already finished.
+            job.part(Stage::Plan, number, plan.len(), (number - 1) as u64, plan.len() as u64, Unit::Parts);
         }
+        job.phase(Stage::Plan, plan.len() as u64, plan.len() as u64, Unit::Parts);
         Ok((paths, unnamed))
     }
 

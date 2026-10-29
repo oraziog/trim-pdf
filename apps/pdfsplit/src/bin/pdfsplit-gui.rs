@@ -117,7 +117,7 @@ fn open(attempt: Attempt) -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([900.0, 700.0])
             .with_min_inner_size([620.0, 520.0])
-            .with_title("pdfsplit — taglia un PDF"),
+            .with_title(concat!("pdfsplit ", env!("CARGO_PKG_VERSION"), " — taglia un PDF")),
         ..Default::default()
     };
     if let Some(backends) = attempt.backends
