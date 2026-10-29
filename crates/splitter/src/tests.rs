@@ -1064,6 +1064,92 @@ fn the_layers_and_the_lost_entries_are_told() {
     assert!(report.warnings.iter().any(|note| note.contains("/PageLabels")), "{:?}", report.warnings);
 }
 
+/// Two pages and a form: page 1 carries a `/FreeText` note that has no `/Type`, and the widget of
+/// a radio group whose `/Parent` is the field holding `/FT`, `/V` and `/T`; page 2 carries a text
+/// field whose widget has an appearance stream of its own, sixty kilobytes of it.
+fn form_document() -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets: Vec<u32> = Vec::new();
+    add(&mut out, &mut offsets, "<< /Type /Catalog /Pages 2 0 R /AcroForm 9 0 R >>");
+    add(&mut out, &mut offsets, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+    add(&mut out, &mut offsets, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Annots [6 0 R 7 0 R] >>");
+    add(&mut out, &mut offsets, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Annots [12 0 R] >>");
+    add_stream(&mut out, &mut offsets, "", b"BT (Prima) Tj ET");
+    // A note, not a page: no /Type, and a /Contents that says what it says.
+    add(&mut out, &mut offsets, "<< /Subtype /FreeText /Rect [10 10 90 40] /Contents (Nota della pagina uno) >>");
+    // A widget whose parent is the radio group's field.
+    add(&mut out, &mut offsets, "<< /Type /Annot /Subtype /Widget /Rect [10 70 40 100] /Parent 10 0 R /P 3 0 R >>");
+    add_stream(&mut out, &mut offsets, "", b"BT (Seconda) Tj ET");
+    add(&mut out, &mut offsets, "<< /Fields [10 0 R 13 0 R] /CO [13 0 R] /DA (/Helv 0 Tf 0 g) >>");
+    add(&mut out, &mut offsets, "<< /FT /Btn /T (Sesso) /Ff 32768 /Kids [7 0 R] >>");
+    let mut appearance = b"ASPETTO-ESTERNO ".to_vec();
+    appearance.extend_from_slice(&[b'x'; 60_000]);
+    add_stream(&mut out, &mut offsets, "", &appearance);
+    add(&mut out, &mut offsets, "<< /Type /Annot /Subtype /Widget /Rect [10 10 40 40] /Parent 13 0 R /P 4 0 R /AP << /N 11 0 R >> >>");
+    add(&mut out, &mut offsets, "<< /FT /Tx /T (Nome) /Kids [12 0 R] >>");
+    classic(out, &offsets, 1)
+}
+
+#[test]
+fn a_note_without_a_type_is_written_as_the_note_it_is() {
+    let directory = temp_dir("form-note");
+    let path = temp_file("form-note.pdf", &form_document());
+    let mut doc = Document::open(&path).unwrap();
+    let options = SplitOptions { out_dir: Some(directory), compression: Compression::Neutral, ..SplitOptions::default() };
+    let report = doc.split(&SplitPlan::from_page_list("1").unwrap(), &options).unwrap();
+    let text = String::from_utf8_lossy(&std::fs::read(&report.parts[0].path).unwrap()).into_owned();
+    // It has a /Contents of its own, which used to be taken for the sign of a page: the note was
+    // written out as a null and vanished without a word.
+    assert!(text.contains("/Subtype /FreeText"), "{text}");
+    assert!(text.contains("(Nota della pagina uno)"), "la nota è sparita: {text}");
+    assert_eq!(report.parts[0].pages, 1);
+}
+
+#[test]
+fn a_radio_group_keeps_the_field_its_widget_belongs_to() {
+    let directory = temp_dir("form-radio");
+    let path = temp_file("form-radio.pdf", &form_document());
+    let mut doc = Document::open(&path).unwrap();
+    let options = SplitOptions { out_dir: Some(directory), compression: Compression::Neutral, ..SplitOptions::default() };
+    let report = doc.split(&SplitPlan::from_page_list("1").unwrap(), &options).unwrap();
+    let text = String::from_utf8_lossy(&std::fs::read(&report.parts[0].path).unwrap()).into_owned();
+    // A widget whose /Parent was dropped inherits neither /FT nor /V nor /T: the group opens empty.
+    let widget = text.split("/Subtype /Widget").nth(1).unwrap_or("");
+    let body = widget.split(">>").next().unwrap_or("");
+    assert!(body.contains("/Parent "), "il widget ha perso il campo: {body}");
+    assert!(text.contains("/FT /Btn") && text.contains("/T (Sesso)"), "{text}");
+    // /Kids holds the widget of this page, and the form is the part's own: one field, not two.
+    let field = text.split("/FT /Btn").nth(1).unwrap_or("");
+    let field_body = field.split(">>").next().unwrap_or("");
+    assert!(field_body.contains("/Kids ["), "il campo ha perso il suo widget: {field_body}");
+    assert!(!text.contains("/T (Nome)"), "il campo della pagina due è arrivato: {text}");
+}
+
+#[test]
+fn a_field_of_another_page_does_not_bring_its_appearance_along() {
+    // Copying /AcroForm whole carried every field, and with each field the widgets of the pages
+    // this part does not hold, each with the appearance stream behind it.
+    let directory = temp_dir("form-other");
+    let path = temp_file("form-other.pdf", &form_document());
+    let mut doc = Document::open(&path).unwrap();
+    let options = SplitOptions { out_dir: Some(directory), compression: Compression::Neutral, ..SplitOptions::default() };
+    let report = doc.split(&SplitPlan::from_page_list("1").unwrap(), &options).unwrap();
+    let text = String::from_utf8_lossy(&std::fs::read(&report.parts[0].path).unwrap()).into_owned();
+    assert!(!text.contains("ASPETTO-ESTERNO"), "l'aspetto della pagina due è arrivato: {text}");
+    assert!(report.parts[0].bytes * 4 < doc.file_size(), "la parte pesa {} sul sorgente {}", report.parts[0].bytes, doc.file_size());
+}
+
+#[test]
+fn the_space_a_split_needs_is_estimated_from_the_pages_it_covers() {
+    // A plan that keeps a four-hundredth of the document needs a four-hundredth of its bytes, not
+    // all of them: the whole source is the answer only when every page is in the plan.
+    assert_eq!(crate::estimated_output(8_000, 4, 400), 80);
+    assert_eq!(crate::estimated_output(8_000, 400, 400), 8_000);
+    assert_eq!(crate::estimated_output(8_000, 0, 400), 0);
+    // More pages planned than the document has (a duplicated page) still gives a sane figure.
+    assert_eq!(crate::estimated_output(u64::MAX, 4, 2), u64::MAX);
+}
+
 #[test]
 fn a_part_that_cannot_take_its_name_says_so() {
     let directory = temp_dir("unnamed");

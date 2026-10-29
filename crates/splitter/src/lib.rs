@@ -174,6 +174,19 @@ impl SplitReport {
     }
 }
 
+/// The bytes a split can take, estimated from the share of the source its pages are.
+///
+/// Pages are not all the same size, so the figure is only as good as the average page in `source_size`;
+/// it is exact in the two ends that matter, the whole document and no page at all, and it never
+/// guesses more than what a part of every page would cost.
+fn estimated_output(source_size: u64, covered: u64, pages: u64) -> u64 {
+    if pages == 0 {
+        return source_size;
+    }
+    let estimate = u128::from(source_size).saturating_mul(u128::from(covered)) / u128::from(pages);
+    u64::try_from(estimate).unwrap_or(u64::MAX)
+}
+
 /// An open PDF: its index, its version, and caches for the objects structure reads.
 pub struct Document {
     path: PathBuf,
@@ -428,18 +441,33 @@ impl Document {
         if let Err(error) = std::fs::create_dir_all(&directory) {
             return Err(Error::io(&directory, error));
         }
-        // A part copies the streams its pages use, so the whole set is about as large as the
-        // source. Asking the volume first turns a full disk into one message instead of a set of
+        // A part copies the streams its pages use, so the parts together are about as large as the
+        // share of the source their pages are — the whole source only when the plan covers every
+        // page. Asking the volume first turns a full disk into one message instead of a set of
         // parts with the last one cut short.
-        if let Ok(free) = fs2::available_space(&directory)
-            && free < source_size
-        {
-            return Err(Error::Limit(format!(
-                "in {} ci sono {} liberi e le parti possono arrivare a {}: libera spazio o scegli un'altra cartella di uscita",
-                directory.display(),
-                size_text(free),
-                size_text(source_size)
-            )));
+        let covered: u64 = (0..plan.len()).map(|index| plan.pages(index).len() as u64).sum();
+        let needed = estimated_output(source_size, covered, pages.len() as u64);
+        let mut space_warning = None;
+        if let Ok(free) = fs2::available_space(&directory) {
+            if free < needed {
+                return Err(Error::Limit(format!(
+                    "in {} ci sono {} liberi e questa suddivisione ne può occupare circa {}: libera spazio o scegli un'altra cartella di uscita",
+                    directory.display(),
+                    size_text(free),
+                    size_text(needed)
+                )));
+            }
+            // Fewer bytes free than the whole source is not an error when the plan keeps a small
+            // share of it, but it is worth saying: pages of different parts share fonts and
+            // images, and each part copies its own.
+            if free < source_size {
+                space_warning = Some(format!(
+                    "in {} ci sono {} liberi: la stima per le pagine scelte è {}, ma font e immagini condivisi tra parti si copiano in ciascuna",
+                    directory.display(),
+                    size_text(free),
+                    size_text(needed)
+                ));
+            }
         }
         let stem = self.file_stem();
         let (targets, unnamed) = self.part_paths(plan, &directory, &stem, options, job)?;
@@ -470,6 +498,9 @@ impl Document {
         };
         let mut version = settings.version;
         let mut warnings: Vec<String> = Vec::new();
+        if let Some(note) = space_warning {
+            warnings.push(note);
+        }
         if options.version.is_none() && source_version < Version::PDF_1_5 {
             warnings.push(format!("il sorgente ha una versione pdf {source_version}: le parti sono scritte in {}", settings.version));
         }
@@ -481,6 +512,9 @@ impl Document {
             };
             warnings.push(format!("{head}: si {} come il file di ingresso, con la sequenza", if unnamed == 1 { "chiama" } else { "chiamano" }));
         }
+        // What the page-tree walk calls a page: the only pages the walk may write as null, and the
+        // only objects the form's fields are cut down to. It does not change from part to part.
+        let document_pages: HashSet<u32> = pages.iter().map(|page| page.reference.num).collect();
         let mut temporaries: Vec<PathBuf> = Vec::new();
         let mut parts: Vec<Part> = Vec::with_capacity(plan.len());
         let mut written = 0_u64;
@@ -492,7 +526,7 @@ impl Document {
             job.part(Stage::Write, index + 1, parts_total, written, source_size, Unit::Bytes);
             let planned = {
                 let reader = Reader::new(&self.source, &self.xref, &mut self.cache);
-                write::build_part(reader, root, pages, &selected, &bookmarks, options.keep_bookmarks)
+                write::build_part(reader, root, pages, &document_pages, &selected, &bookmarks, options.keep_bookmarks)
             };
             let planned = planned.inspect_err(|_| discard(&temporaries))?;
             // The bytes of this part are reported as they are copied, so a part of three gigabytes

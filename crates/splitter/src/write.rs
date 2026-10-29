@@ -65,11 +65,12 @@ pub(crate) fn build_part(
     reader: Reader<'_>,
     root: ObjRef,
     pages: &[PageEntry],
+    document_pages: &HashSet<u32>,
     selected: &[usize],
     bookmarks: &[Bookmark],
     keep_bookmarks: bool,
 ) -> Result<PlannedPart, Error> {
-    let mut builder = PartBuilder::new(reader);
+    let mut builder = PartBuilder::new(reader, document_pages);
     // The catalog and the page tree take the first numbers, then the pages: a part then reads
     // the way a document does.
     let catalog = builder.fresh();
@@ -99,22 +100,33 @@ pub(crate) fn build_part(
     if let Some((outlines, _)) = outline {
         catalog_dict.insert(b"Outlines".to_vec(), Object::Ref(ObjRef { num: outlines, generation: 0 }));
     }
-    // A form's field tree, a print profile's colour intent and the layer configuration reach
-    // objects the pages use too: carrying them over keeps widgets attached to their fields, keeps
-    // the colour intent beside the content that needs it, and keeps the layers as the source had
-    // them — a layer the source hid must not come back visible in every part.
     let source = builder.reader.get(root)?;
-    for key in [&b"AcroForm"[..], &b"OutputIntents"[..], &b"OCProperties"[..]] {
+    let mut notes = Vec::new();
+    // A print profile's colour intent and the layer configuration reach objects the pages use too:
+    // carrying them over keeps the colour intent beside the content that needs it, and keeps the
+    // layers as the source had them — a layer the source hid must not come back visible in every
+    // part. The form is not one of them: a field of it holds the widgets of every page that uses
+    // the field, so the form is rebuilt around the widgets this part actually carries.
+    for key in [&b"OutputIntents"[..], &b"OCProperties"[..]] {
         let Some(value) = source.as_dict().and_then(|dict| dict.get(key)).cloned() else { continue };
         let copied = builder.value(&value)?;
         if !matches!(copied, Object::Null) {
             catalog_dict.insert(key.to_vec(), copied);
         }
     }
+    if let Some(form) = source.as_dict().and_then(|dict| dict.get(b"AcroForm")).cloned() {
+        let (copied, dropped_xfa) = builder.form(&form)?;
+        // A form with no field of this part is left out rather than written empty.
+        if let Some(dict) = copied {
+            catalog_dict.insert(b"AcroForm".to_vec(), Object::Dict(dict));
+        }
+        if dropped_xfa {
+            notes.push("il modulo ha una parte /XFA: le parti non la portano e i campi restano quelli di /Fields".to_string());
+        }
+    }
     // Whatever those entries reach is planned now: a layer's own object, say, is referenced from
     // nowhere else, and would otherwise be numbered and never written.
     builder.drain()?;
-    let mut notes = Vec::new();
     if let Some(dict) = source.as_dict() {
         let lost: Vec<String> = LOST_CATALOG
             .iter()
@@ -158,8 +170,12 @@ struct Node {
 }
 
 /// Renumbers one part: every object it reaches gets a new number and a planned body.
-struct PartBuilder<'a> {
+struct PartBuilder<'a, 'p> {
     reader: Reader<'a>,
+    /// Every page of the document, by object number. An object either is one of these or it is not
+    /// a page at all: no guess is made from `/Type` or `/Contents`, because a `/FreeText` note has
+    /// a `/Contents` of its own and a guess would write it out as a null.
+    document_pages: &'p HashSet<u32>,
     /// Object number in the source → object number in this part.
     numbers: HashMap<u32, u32>,
     next: u32,
@@ -170,11 +186,23 @@ struct PartBuilder<'a> {
     /// `/Parent` is the page tree, and the page tree holds every page of the document, with all
     /// their content. One link to a page elsewhere would otherwise pull the whole file in.
     own_pages: HashSet<u32>,
+    /// The annotations of this part's pages, by object number: a form field's `/Kids` is cut down
+    /// to these, so a part never carries the widgets of the pages it does not hold.
+    annotations: HashSet<u32>,
 }
 
-impl<'a> PartBuilder<'a> {
-    fn new(reader: Reader<'a>) -> Self {
-        Self { reader, numbers: HashMap::new(), next: 1, queue: Vec::new(), objects: BTreeMap::new(), own_pages: HashSet::new() }
+impl<'a, 'p> PartBuilder<'a, 'p> {
+    fn new(reader: Reader<'a>, document_pages: &'p HashSet<u32>) -> Self {
+        Self {
+            reader,
+            document_pages,
+            numbers: HashMap::new(),
+            next: 1,
+            queue: Vec::new(),
+            objects: BTreeMap::new(),
+            own_pages: HashSet::new(),
+            annotations: HashSet::new(),
+        }
     }
 
     /// Remember that this part holds `page`, so a reference to it is followed rather than cut.
@@ -217,8 +245,9 @@ impl<'a> PartBuilder<'a> {
             // A page this part does not hold is dropped before its dictionary is copied: copying
             // it would intern its `/Parent`, that is the whole page tree, and with the tree every
             // page of the document. A destination pointing here reads as a null, which is what a
-            // viewer shows for a link that goes nowhere.
-            if !self.own_pages.contains(&reference.num) && is_page_object(&value) {
+            // viewer shows for a link that goes nowhere. Only an object the page-tree walk reached
+            // is a page: anything else — a note, a widget, a form field — is written as it is.
+            if !self.own_pages.contains(&reference.num) && self.document_pages.contains(&reference.num) {
                 self.objects.insert(number, OutObject::Value(Object::Null));
                 continue;
             }
@@ -254,13 +283,9 @@ impl<'a> PartBuilder<'a> {
         })
     }
 
-    /// Whether an object is a page of the document that this part does not hold.
-    fn is_foreign_page(&mut self, reference: ObjRef) -> Result<bool, Error> {
-        if self.own_pages.contains(&reference.num) {
-            return Ok(false);
-        }
-        let value = self.reader.get(reference)?;
-        Ok(is_page_object(&value))
+    /// Whether a reference names a page of the document that this part does not hold.
+    fn is_foreign_page(&self, reference: ObjRef) -> bool {
+        !self.own_pages.contains(&reference.num) && self.document_pages.contains(&reference.num)
     }
 
     /// True when a destination names a page this part does not hold.
@@ -268,7 +293,7 @@ impl<'a> PartBuilder<'a> {
         let resolved = self.reader.resolve(destination)?;
         let Object::Array(items) = &*resolved else { return Ok(false) };
         let Some(page) = items.first().and_then(Object::as_ref) else { return Ok(false) };
-        self.is_foreign_page(page)
+        Ok(self.is_foreign_page(page))
     }
 
     /// True when an action is a `/GoTo` into a page this part does not hold.
@@ -284,17 +309,115 @@ impl<'a> PartBuilder<'a> {
 
     /// True when a `/Parent` points at a page-tree node. A part builds its own tree, and following
     /// the source's would carry every page of the document into the part.
+    ///
+    /// A `/Kids` is not the sign of a tree: the `/Kids` of a radio group are its widgets, and a
+    /// widget whose `/Parent` is dropped no longer inherits `/FT`, `/V` and `/T`, so the group
+    /// opens empty. A node is a page-tree node when something below its `/Kids` is a page of the
+    /// document.
     fn parent_is_tree(&mut self, value: &Object) -> Result<bool, Error> {
         let Object::Ref(target) = value else { return Ok(false) };
-        let node = self.reader.get(*target)?;
-        let Some(dict) = node.as_dict() else { return Ok(false) };
-        Ok(dict.get_name(b"Type") == Some(b"Pages") || (dict.get_name(b"Type") != Some(b"Page") && dict.get_array(b"Kids").is_some()))
+        let mut seen = HashSet::new();
+        self.is_page_tree_node(*target, 0, &mut seen)
+    }
+
+    /// True when `node` says it is a page-tree node, or holds a page of the document below its
+    /// `/Kids` at any depth.
+    fn is_page_tree_node(&mut self, node: ObjRef, depth: usize, seen: &mut HashSet<ObjRef>) -> Result<bool, Error> {
+        if depth > MAX_TREE_DEPTH || !seen.insert(node) {
+            return Ok(false);
+        }
+        let value = self.reader.get(node)?;
+        let Some(dict) = value.as_dict() else { return Ok(false) };
+        if dict.get_name(b"Type") == Some(b"Pages") {
+            return Ok(true);
+        }
+        let Some(kids) = dict.get_array(b"Kids").map(<[Object]>::to_vec) else { return Ok(false) };
+        for kid in &kids {
+            let Some(reference) = kid.as_ref() else { continue };
+            if self.document_pages.contains(&reference.num) || self.is_page_tree_node(reference, depth + 1, seen)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// True when `reference` is one of this part's annotations, or a form field whose children
+    /// reach one.
+    fn leads_to_a_widget(&mut self, reference: ObjRef, depth: usize) -> Result<bool, Error> {
+        if self.annotations.contains(&reference.num) {
+            return Ok(true);
+        }
+        if depth >= MAX_FIELD_DEPTH {
+            return Ok(false);
+        }
+        let value = self.reader.get(reference)?;
+        let Some(dict) = value.as_dict() else { return Ok(false) };
+        let Some(kids) = dict.get_array(b"Kids").map(<[Object]>::to_vec) else { return Ok(false) };
+        for kid in &kids {
+            if let Some(child) = kid.as_ref()
+                && self.leads_to_a_widget(child, depth + 1)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The catalog's `/AcroForm`, rebuilt for this part: its own settings, and only the fields that
+    /// still hold a widget on one of the part's pages.
+    ///
+    /// Returns the entry to write — `None` when the part holds no field at all — and whether an
+    /// `/XFA` form was left behind, which the report says instead of hiding.
+    fn form(&mut self, form: &Object) -> Result<(Option<Dict>, bool), Error> {
+        let resolved = self.reader.resolve(form)?;
+        let Some(dict) = resolved.as_dict() else { return Ok((None, false)) };
+        // `/XFA` is the whole form, written by a producer and naming fields this part may not hold:
+        // carrying it would make the part describe the source's form instead of its own pages.
+        let dropped_xfa = dict.get(b"XFA").is_some_and(|value| !matches!(value, Object::Null));
+        let mut out = Dict::new();
+        for (key, value) in dict.iter() {
+            if key == b"Fields" || key == b"CO" || key == b"XFA" {
+                continue;
+            }
+            let copied = self.value(value)?;
+            out.insert(key.to_vec(), copied);
+        }
+        let fields = self.fields_of(dict.get_array(b"Fields"))?;
+        if fields.is_empty() {
+            return Ok((None, dropped_xfa));
+        }
+        out.insert(b"Fields".to_vec(), Object::Array(fields));
+        // The calculation order names fields too, so it is cut to the same set.
+        let order = self.fields_of(dict.get_array(b"CO"))?;
+        if !order.is_empty() {
+            out.insert(b"CO".to_vec(), Object::Array(order));
+        }
+        Ok((Some(out), dropped_xfa))
+    }
+
+    /// The entries of a form list that still hold a widget of this part, numbered for writing.
+    fn fields_of(&mut self, entries: Option<&[Object]>) -> Result<Vec<Object>, Error> {
+        let mut fields = Vec::new();
+        let Some(entries) = entries else { return Ok(fields) };
+        for entry in entries {
+            let Some(target) = entry.as_ref() else { continue };
+            if self.leads_to_a_widget(target, 0)? {
+                fields.push(reference(self.intern(target)));
+            }
+        }
+        Ok(fields)
     }
 
     /// A copy of `dict` with every reference renumbered, minus the keys the part replaces and the
     /// ones that would point outside it.
     fn dict(&mut self, dict: &Dict, skip: &[&[u8]]) -> Result<Dict, Error> {
         let mut out = Dict::new();
+        // A page-tree node is written by `pages_tree`, never copied: its `/Kids` is checked here so
+        // that the filtering below never touches a node that lists pages.
+        let is_tree = dict.get_name(b"Type") == Some(b"Pages")
+            || dict
+                .get_array(b"Kids")
+                .is_some_and(|kids| kids.iter().any(|kid| kid.as_ref().is_some_and(|reference| self.document_pages.contains(&reference.num))));
         for (key, value) in dict.iter() {
             if skip.contains(&key) {
                 continue;
@@ -308,6 +431,22 @@ impl<'a> PartBuilder<'a> {
                 continue;
             }
             if key == b"Parent" && self.parent_is_tree(value)? {
+                continue;
+            }
+            // A form field's `/Kids` holds the widgets of every page that uses the field: only the
+            // ones on this part's pages stay, or each part would carry the appearance streams of
+            // the pages it does not have.
+            if key == b"Kids" && !is_tree {
+                let mut children = Vec::new();
+                if let Some(items) = value.as_array() {
+                    for item in items {
+                        let Some(target) = item.as_ref() else { continue };
+                        if self.leads_to_a_widget(target, 0)? {
+                            children.push(reference(self.intern(target)));
+                        }
+                    }
+                }
+                out.insert(key.to_vec(), Object::Array(children));
                 continue;
             }
             let copied = self.value(value)?;
@@ -330,6 +469,18 @@ impl<'a> PartBuilder<'a> {
         for (key, value) in page.iter() {
             if key == b"Parent" || key == b"Type" {
                 continue;
+            }
+            // The annotations of this part, remembered before they are copied: the form is cut
+            // down to fields that still hold one of these.
+            if key == b"Annots" {
+                let annots = self.reader.resolve(value)?;
+                if let Object::Array(items) = &*annots {
+                    for item in items {
+                        if let Some(reference) = item.as_ref() {
+                            self.annotations.insert(reference.num);
+                        }
+                    }
+                }
             }
             let copied = self.value(value)?;
             dict.insert(key.to_vec(), copied);
@@ -573,16 +724,6 @@ pub(crate) fn write(
     Ok(Written { bytes: out.offset(), version, notes })
 }
 
-/// Whether an object is one page: a dictionary that says so, or — as lenient readers accept — one
-/// with no `/Type`, no `/Kids` and content of its own.
-fn is_page_object(value: &Object) -> bool {
-    let Some(dict) = value.as_dict() else { return false };
-    match dict.get_name(b"Type") {
-        Some(name) => name == b"Page",
-        None => dict.get_array(b"Kids").is_none() && dict.get(b"Contents").is_some(),
-    }
-}
-
 /// True for an object that goes inside the object stream: a dictionary or an array, but never a
 /// stream, and never the catalog, which every reader is entitled to find as an object of its own.
 fn packs_into_object_stream(number: u32, object: &OutObject, catalog: u32) -> bool {
@@ -594,6 +735,11 @@ fn packs_into_object_stream(number: u32, object: &OutObject, catalog: u32) -> bo
 fn filtered(dict: &Dict) -> bool {
     dict.get(b"Filter").is_some_and(|value| !matches!(value, Object::Null))
 }
+
+/// Deepest page-tree nesting followed while deciding whether a `/Parent` is the page tree.
+const MAX_TREE_DEPTH: usize = 32;
+/// Deepest form-field nesting followed through `/Kids`.
+const MAX_FIELD_DEPTH: usize = 8;
 
 /// Most dictionaries one object stream holds. A reader decodes a whole stream to reach a single
 /// member, so the count is kept low: the price of a smaller number is a few more streams, the price
