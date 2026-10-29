@@ -1,0 +1,14 @@
+pdfsplit
+Copyright (c) 2026 pdfsplit contributors.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+This product includes software developed as part of PdfCraft
+(https://github.com/storytold/pdfcraft), licensed under MIT OR Apache-2.0:
+
+  PdfCraft
+  Copyright (c) 2026 ArtCraft Team and the PdfCraft contributors.
+  Licensed under the MIT License or the Apache License, Version 2.0, at your option.
+
+Vendored here: `vendor/pdfcraft-filters` (the `pdfcraft-filters` crate, stream filters). See
+`vendor/pdfcraft-filters/README.md` for the pinned commit and the exact scope.

@@ -1,0 +1,19 @@
+# Vendored copy of `pdfcraft-filters` from storytold/pdfcraft @ 1dd2737b47a9c1c9562f0af5630531bf510e4bf.
+# Only the manifest differs from upstream: the workspace-inherited fields are written out in full so
+# the crate stands alone. See README.md and NOTICE for provenance and licence.
+[package]
+name = "pdfcraft-filters"
+description = "PDF stream filters (ISO 32000-2 §7.4): Flate, LZW, predictors, ASCII85, ASCIIHex, RunLength"
+version = "0.14.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/pdfcraft"
+
+[dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+weezl = "0.2"

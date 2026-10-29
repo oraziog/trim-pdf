@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/splitter", "apps/pdfsplit"]
+# Vendored third-party crates stay outside the workspace: they carry their own manifest and licence.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# Vendored from storytold/pdfcraft (see vendor/pdfcraft-filters/README.md); MIT OR Apache-2.0.
+pdfcraft-filters = { path = "vendor/pdfcraft-filters" }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+# The ordinary release profile. The workspace keeps `lto = "thin"` so day-to-day builds stay fast.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The shipped executable: smallest binary the spec allows (see MD/prompt-pdf-splitter.md).
+[profile.release-min]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,24 @@
+[package]
+name = "splitter"
+description = "Core of pdfsplit: opens very large PDFs, counts pages and reads bookmarks in constant memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "splitter"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+pdfcraft-filters = { workspace = true }
+regex-lite = "0.1.9"
+# The same encoder the vendored filters use: it compresses a stream a chunk at a time.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+thiserror = { workspace = true }
+# Free space on the volume a part is written to, before the first byte: a full disk otherwise
+# shows up as a broken set of parts.
+fs2 = "0.4"
