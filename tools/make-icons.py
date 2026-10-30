@@ -1,10 +1,13 @@
-"""Dai due disegni di partenza alle icone che finiscono nel repo e negli eseguibili.
+"""Dai disegni di partenza alle icone che finiscono nel repo e negli eseguibili.
 
-    python tools/make-icons.py assets/icona-cli-master.png assets/icona-gui-master.png
+    python tools/make-icons.py icona-cli.jpg icona-gui.jpg [banner.jpg]
 
-I due argomenti sono le immagini di partenza (PNG o JPG, almeno 512x512). Lo sfondo bianco
-attorno al cerchio (CLI) e fuori dagli angoli arrotondati (GUI) diventa trasparente: cosi'
-l'icona sta bene sia su una barra delle applicazioni chiara sia su una scura.
+I primi due argomenti sono le immagini di partenza (PNG o JPG, almeno 512x512). Lo sfondo bianco
+attorno al disegno, se c'e', diventa trasparente: cosi' l'icona sta bene sia su una barra delle
+applicazioni chiara sia su una scura. Uno sfondo scuro resta com'e'.
+
+Il terzo, se c'e', e' il banner gia' composto: viene ritagliato a 16:9 e salvato come anteprima
+sociale, invece di essere costruito dal disegno della finestra.
 
 Produce:
 
@@ -12,7 +15,7 @@ Produce:
     assets/icona-gui.png         512x512, l'icona della finestra (e quella del README)
     assets/icona-cli.ico         16, 24, 32, 48, 64, 128, 256 px
     assets/icona-gui.ico         le stesse misure
-    assets/social-preview.png    1280x640, da caricare nelle impostazioni di GitHub
+    assets/social-preview.png    1280x640, il banner della pagina GitHub e del README
 
 Pillow serve solo a questo script, non alla compilazione.
 """
@@ -60,9 +63,10 @@ def squared(image: Image.Image) -> Image.Image:
 
 
 def main(arguments: list[str]) -> int:
-    if len(arguments) != 2:
+    if len(arguments) not in (2, 3):
         print(__doc__)
         return 2
+    arguments, banner = arguments[:2], (arguments[2] if len(arguments) == 3 else None)
 
     (ROOT / "assets").mkdir(exist_ok=True)
 
@@ -87,13 +91,28 @@ def main(arguments: list[str]) -> int:
         )
         print(f"{target.relative_to(ROOT)}  {target.stat().st_size} B")
 
-    social = Image.new("RGBA", (1280, 640), (27, 27, 27, 255))
-    badge = masters["gui"].resize((384, 384), Image.LANCZOS)
-    social.alpha_composite(badge, (96, (640 - 384) // 2))
-    # Una riga arancione sotto lo spazio lasciato libero per il titolo.
-    social.paste((230, 126, 34, 255), (560, 424, 1184, 428))
     target = ROOT / "assets" / "social-preview.png"
-    social.convert("RGB").save(target, optimize=True)
+    if banner:
+        # Il banner e' gia' composto: 1280x640, cioe' 16:9, ritagliato dal centro.
+        social = Image.open(banner).convert("RGB")
+        width, height = social.size
+        if width * 640 > height * 1280:
+            cropped = height * 1280 // 640
+            left = (width - cropped) // 2
+            social = social.crop((left, 0, left + cropped, height))
+        else:
+            cropped = width * 640 // 1280
+            top = (height - cropped) // 2
+            social = social.crop((0, top, width, top + cropped))
+        social = social.resize((1280, 640), Image.LANCZOS)
+    else:
+        social = Image.new("RGBA", (1280, 640), (27, 27, 27, 255))
+        badge = masters["gui"].resize((384, 384), Image.LANCZOS)
+        social.alpha_composite(badge, (96, (640 - 384) // 2))
+        # Una riga arancione sotto lo spazio lasciato libero per il titolo.
+        social.paste((230, 126, 34, 255), (560, 424, 1184, 428))
+        social = social.convert("RGB")
+    social.save(target, optimize=True)
     print(f"{target.relative_to(ROOT)}  {target.stat().st_size} B")
     return 0
 

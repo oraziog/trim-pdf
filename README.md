@@ -1,6 +1,8 @@
-<img src="assets/icona-gui.png" width="88" align="right" alt="pdfsplit">
+<img src="assets/social-preview.png" alt="pdfsplit">
 
 # pdfsplit
+
+<img src="assets/icona-cli.png" width="64" align="right" alt="pdfsplit">
 
 Taglia PDF enormi — decine di migliaia di pagine, diversi gigabyte — in parti, senza mai caricare
 il documento in memoria.
@@ -43,12 +45,16 @@ cargo test -p pdfsplit --features gui
 ```
 
 Le icone stanno in `assets/` e `apps/pdfsplit/build.rs` le incide nei due eseguibili, insieme alle
-proprietà del file (descrizione, prodotto, versione). Per rifarle dai due disegni di partenza serve
-Python con Pillow:
+proprietà del file (descrizione, prodotto, versione). Per rifarle dai disegni di partenza serve
+Python con Pillow; il terzo argomento, se c'è, è il banner già composto per la pagina GitHub:
 
 ```sh
-python tools/make-icons.py disegno-console.png disegno-finestra.png
+python tools/make-icons.py disegno-console.jpg disegno-finestra.jpg banner.jpg
 ```
+
+L'anteprima sociale (`assets/social-preview.png`, 1280x640) è anche l'immagine in testa a questo
+file. GitHub non la carica dal repository nella scheda del progetto: va scelta a mano in
+*Settings → General → Social preview*.
 
 ## Uso
 
@@ -112,111 +118,37 @@ e [NOTICE](NOTICE) per il codice di terzi incluso (`vendor/pdfcraft-filters`, de
 
 ---
 
-# English
+# English — summary
 
-Splits very large PDFs — tens of thousands of pages, several gigabytes — into parts, without ever
-loading the document into memory.
+**pdfsplit** cuts very large PDFs — tens of thousands of pages, several gigabytes — into parts,
+without ever loading the document into memory. It is made for the cases where ordinary tools give
+up: a single 6 GB PDF with 73,868 pages, split into two parts in under a minute.
 
-It covers the cases where ordinary tools give up: a single 6 GB PDF with 73,868 pages, split into
-two parts in under a minute, with peak memory below one gigabyte.
-
-## What it does
-
-- **Reads the structure incrementally.** `xref` tables and streams, object streams, files with
-  several sections: each object is read when it is needed, never all at once.
-- **Copies streams byte for byte.** No re-encoding of images or fonts: parts are written by copying
-  bytes, so time depends on the disk and not on the content.
-- **Rebuilds bookmarks in every part**, recomputing destinations against the pages that part really
-  holds. A link pointing at a page that ended up elsewhere becomes null instead of dragging the
-  rest of the document inside.
-- **Four ways to cut**: page list, N equal parts, text found on pages, bookmark level.
+- **Incremental structure.** `xref` tables and streams, object streams, files with several
+  sections: every object is read at an absolute offset when it is needed, never all at once.
+- **Streams are copied byte for byte.** Images and fonts are never re-encoded, so the time depends
+  on the disk, not on the content.
+- **Parts are rebuilt, not cut.** Each part gets a new page tree, contiguous object numbers and its
+  own outline; a link to a page that ended up in another part becomes null instead of dragging the
+  whole document inside, and form fields are trimmed to the widgets the part actually carries.
+- **Four ways to cut**: page list, N equal parts, text found on the pages, bookmark level. Names
+  come from a sequence or from the pages' own text.
 - **Two interfaces**: `pdfsplit` on the console and `pdfsplit-gui`, a window with phases, progress,
-  remaining-time estimate and cancel. Each has its own icon, embedded in the executable.
-
-## Building
-
-Rust 1.95 or later.
+  remaining time and cancel, plus a generated `.cmd` batch for the same job.
 
 ```sh
-cargo build --profile release-min                      # console
-cargo build --profile release-min --features gui       # window
+cargo build --profile release-min                    # console, about 646 KiB
+cargo build --profile release-min --features gui      # window, about 7.8 MiB
 ```
 
-The `release-min` profile is the distribution one: `opt-level = "s"`, LTO, `strip`, `panic abort`.
-It produces `target/release-min/pdfsplit.exe` (about 646 KiB) and, with the `gui` feature,
-`pdfsplit-gui.exe` (about 7.8 MiB, almost all of it egui and wgpu).
+Rust 1.95 or later; Windows is the platform the released `pdfsplit.exe` and `pdfsplit-gui.exe` are
+built for. Parts are written, by default, in the PDF version of the source and without
+recompressing the streams: compressing a 6 GB file costs about a minute and a half more, so the
+default is the fast, faithful one and `--compress` is there when the size matters.
 
-Tests:
+The design, the measurements and the open work are in [MD/](MD/); the plan for getting the
+per-part dictionary table out of memory is in
+[MD/m6-ram-dizionari.md](MD/m6-ram-dizionari.md).
 
-```sh
-cargo test --workspace
-cargo test -p pdfsplit --features gui
-```
-
-Icons live in `assets/` and `apps/pdfsplit/build.rs` embeds them into both executables, together
-with the file properties (description, product, version). Regenerating them from the two source
-drawings needs Python with Pillow:
-
-```sh
-python tools/make-icons.py console-drawing.png window-drawing.png
-```
-
-## Usage
-
-```
-pdfsplit info <file.pdf>             what the file is: size, version, pages, bookmarks, encryption
-pdfsplit pages <file.pdf>            the page count only
-pdfsplit bookmarks <file.pdf>        the outline as `level<TAB>page<TAB>title` lines
-pdfsplit search <file.pdf> <text>    which pages contain the text
-pdfsplit text <file.pdf> --page N    what a page says
-pdfsplit split <file.pdf>            cut the file into parts
-pdfsplit --help                      this text
-```
-
-Examples:
-
-```sh
-# one document per heading found in the text, named after that line
-pdfsplit split "FILE_TEST_X_TRIM-PDF.pdf" --string "AVVISO DI PAGAMENTO TASSA RIFIUTI" --name-label "Documento N."
-
-# the first 35,308 pages, the rest in one last file, replacing anything already there
-pdfsplit split "FILE_TEST_X_TRIM-PDF.pdf" --pages 1-35308 --leftover --overwrite
-
-# cut at first-level bookmarks, compressing the streams
-pdfsplit split "Fattura 101.pdf" --bookmarks 1 --name-from-title --compress --out .\out-dir
-```
-
-Parts are named, for example, `FILE_TEST_X_TRIM-PDF-01.pdf`, `-02.pdf`. `--prefix`, `--suffix`,
-`--width` and `--start` change the prefix, the suffix, the number of digits and the first number;
-`--always-number` adds the sequence even when the name comes from the text.
-
-## Measured performance
-
-On a real 6.06 GB PDF with 73,868 pages, split into two parts of about 37,000 pages:
-
-| | |
-|---|---|
-| duration | 00:00:49 |
-| bytes written | 6,104 MiB |
-
-Peak memory does not grow with the page count: on a synthetic 300,000-page fixture it stays below
-700 MiB, because the document is never read all at once.
-
-Compressing the streams costs about a minute and a half more on the same file, because every stream
-has to be decompressed and recompressed instead of copied. That is why parts are written, by
-default, in the same PDF version as the source.
-
-## Known limits
-
-- References to pages that end up in another part are nulled: an internal link does not survive the
-  cut.
-- From the catalogue, pages, bookmarks and `OCProperties` are carried over; `Info`, `Metadata`,
-  `PageLabels`, `Names` and `StructTreeRoot` are not rewritten.
-- A part cannot be written in a PDF version older than 1.5 when it uses object streams and xref
-  streams: in that case the source version is raised and the report says so.
-
-## Licence
-
-MIT or Apache-2.0, at your choice. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE),
-and [NOTICE](NOTICE) for the bundled third-party code (`vendor/pdfcraft-filters`, derived from
-[PdfCraft](https://github.com/storytold/pdfcraft)).
+Licence: MIT or Apache-2.0, at your choice. Bundled third-party code: `vendor/pdfcraft-filters`,
+derived from [PdfCraft](https://github.com/storytold/pdfcraft).

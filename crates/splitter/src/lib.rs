@@ -471,6 +471,11 @@ impl Document {
         }
         let stem = self.file_stem();
         let (targets, unnamed) = self.part_paths(plan, &directory, &stem, options, job)?;
+        // Naming has read the pages it needed. The text of the document is not wanted while the
+        // parts are written, and this is the moment it would weigh most: the dictionaries of the
+        // part being planned sit beside it.
+        self.texts.clear();
+        self.text_bytes = 0;
         // Every name is checked before the first byte is written, and the error lists them all.
         if !options.overwrite {
             let taken: Vec<String> = targets.iter().filter(|path| path.exists()).map(|path| path.display().to_string()).collect();
